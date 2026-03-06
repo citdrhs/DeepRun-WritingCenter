@@ -25,7 +25,7 @@
   <!--
   <div id="calendar">
   <p id="wrap">
-  <iframe src="https://calendar.google.com/calendar/u/0/embed?src=Y19jMTg3Yzg5MGRmNGU4ZjFhMWRlYzZiMzYwNmM5NGZkZmMxZGI3ODg0NmMyMzJlOTg4ZjQ0YzU3MDk4NzZiNWFmQGdyb3VwLmNhbGVuZGFyLmdvb2dsZS5jb20" width="800" height="600" scrolling="no";"></iframe>
+  <iframe src="https://calendar.google.com/calendar/u/0/embed?src=Y19jMTg3Yzg5MGRmNGU4ZjFhMWRlYzZiMzYwNmM5NGZkZmMxZGI3ODg0NmMyMzJlOTg4ZjQ0YzU3MDk4NzZiNWFmQGdyb3VwLmNhbGVuZGFyLmdvb2dsZS5jb20" width="800" height="600" scrolling="no";></iframe>
   </p>
   </div>
   -->
@@ -44,43 +44,38 @@
         <h2>Student Sign-Up Form</h2>
       </div>
 
-      <form class="card">
-
+      <form id="signup-form" class="card">
 
         <div class="grid-2">
           <label class="field">
             <span>Email <strong>*</strong></span>
-            <input type="email" name="email" required />
+            <input type="email" name="studentEmail" required />
           </label>
-       
-       
+
           <label class="field">
             <span>Last Name <strong>*</strong></span>
             <input type="text" name="lastName" required />
           </label>
         </div>
-       
-       
+
         <div class="grid-2">
           <label class="field">
             <span>First Name <strong>*</strong></span>
             <input type="text" name="firstName" required />
           </label>
-       
-       
+
           <label class="field">
             <span>Student Grade Level <strong>*</strong></span>
-            <select name="gradeLevel" required>
+            <select name="studentGrade" required>
               <option value="" selected disabled>Choose</option>
-              <option>9th Grade</option>
-              <option>10th Grade</option>
-              <option>11th Grade</option>
-              <option>12th Grade</option>
+              <option value="9">9th Grade</option>
+              <option value="10">10th Grade</option>
+              <option value="11">11th Grade</option>
+              <option value="12">12th Grade</option>
             </select>
           </label>
         </div>
-       
-       
+
         <label class="field">
           <span>
             When would you like to make an appointment? <strong>*</strong><br>
@@ -92,14 +87,14 @@
           </span>
           <input type="datetime-local" name="appointmentDateTime" required />
         </label>
-       
-       
+
         <label class="field">
           <span>What is the name of the teacher who gave this writing assignment? <strong>*</strong></span>
-          <input type="text" name="assignmentTeacher" required />
+          <select name="teacherEmail" id="signup-teacher-email" required>
+            <option value="" selected disabled>Loading teachers...</option>
+          </select>
         </label>
-       
-       
+
         <label class="field">
           <span>
             What subject and level is the course for which you are completing this writing assignment?
@@ -123,7 +118,7 @@
             <option>Oral Presentation</option>
             <option>Other</option>
           </select>
-         </label>
+        </label>
 
         <label class="field">
           <span>
@@ -132,8 +127,15 @@
           </span>
           <input type="url" name="googleDocLink" placeholder="Paste Google Docs link here" />
         </label>
-       
-       
+
+        <div class="field">
+          <span>Dual Enrollment Student? <strong>*</strong></span>
+          <div class="radio-row">
+            <label><input type="radio" name="dualEnroll" value="true" required /> Yes</label>
+            <label><input type="radio" name="dualEnroll" value="false" required /> No</label>
+          </div>
+        </div>
+
         <div class="actions">
           <button class="btn primary" type="submit">
             Submit
@@ -142,11 +144,14 @@
             Reset
           </button>
         </div>
-       
-       
-       </form>
+
+        <div class="toast" id="signup-message"></div>
+
+      </form>
               
     </section>
+
+  </main>
 
   <footer class="footer">
     <p><strong>Writing Center Location:</strong> Room 212</p>
@@ -158,7 +163,8 @@
       <a href="mailto:mdcho@henrico.k12.va.us">mdcho@henrico.k12.va.us</a>
     </p>
   </footer>
+
   <script src="theme-toggle.js"></script>
-</body>
+  <script src="script.js"></script></body>
 
 </html>

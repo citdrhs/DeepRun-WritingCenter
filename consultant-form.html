@@ -19,8 +19,6 @@
     <a href="./consultant-form.html"> Consultant Form </a>
     <a id="drhslogo_link" href="https://deeprun.henricoschools.us/"> <img id="drhslogo" src="./Images/drhslogo.png"> </a>
   </nav>
-  
-
 
   <main class="container">
     <div class="card" id="calendarintro">
@@ -35,83 +33,28 @@
         <h2>Consultant Session Report</h2>
       </div>
 
-      <form class="card">
-        <label class="field">
-          <span>Sign-Up Appointment (Date)</span>
-          <select name="signupDate" required>
-            <option selected disabled>Choose a sign-up date</option>
-            <option>1</option>
-          </select>
-        </label>
-
-        <div class="grid-2">
-          <label class="field">
-            <span>Consultant's Name (First and Last)</span>
-            <input type="text" name="consultantName" required />
-          </label>
-
-          <label class="field">
-            <span>Writer's Name (First and Last)</span>
-            <input type="text" name="writerName" required />
-          </label>
-        </div>
-
-        <div class="grid-2">
-          <label class="field">
-            <span>Date of Appointment</span>
-            <input type="date" name="dateOfAppointment" required />
-          </label>
-
-          <label class="field">
-            <span>Writer's Grade Level</span>
-            <select name="gradeLevel" required>
-              <option value="" selected disabled>Choose</option>
-              <option>9th Grade</option>
-              <option>10th Grade</option>
-              <option>11th Grade</option>
-              <option>12th Grade</option>
-            </select>
-          </label>
-        </div>
+      <form id="consultant-form" class="card">
 
         <label class="field">
-          <span>Teacher who gave the writing assignment</span>
-          <select name="teacherAssigned" required>
-            <option value="" selected disabled>Choose</option>
-            <option>Mrs. Tambellini</option>
-            <option>Mrs. Cho</option>
+          <span>Select Student Sign-Up <strong>*</strong></span>
+          <select name="consultId" id="consult-id-select" required>
+            <option value="" selected disabled>Loading sign-ups...</option>
           </select>
         </label>
 
         <label class="field">
-          <span>Course (Subject + Level)</span>
-          <input type="text" name="courseLevel" placeholder="Ex. English 12 AP" required />
+          <span>Consultant's Name (First and Last) <strong>*</strong></span>
+          <input type="text" name="consultantName" required />
         </label>
 
         <label class="field">
-          <span>Type of Assignment</span>
-          <select name="assignmentType" required>
-            <option value="" selected disabled>Choose</option>
-            <option>Analytical Essay</option>
-            <option>Argumentative/Persuasive Essay</option>
-            <option>Narrative/College Essay</option>
-            <option>CIT Paper/Proposal</option>
-            <option>Science Report</option>
-            <option>History Paper</option>
-            <option>Creative Writing</option>
-            <option>Research Paper</option>
-            <option>Presentation</option>
-          </select>
-        </label>
-
-        <label class="field">
-          <span>DUE DATE for this writing assignment</span>
+          <span>DUE DATE for this writing assignment <strong>*</strong></span>
           <input type="date" name="dueDate" required />
         </label>
 
         <div class="grid-2">
           <label class="field">
-            <span>Writer confidence BEFORE</span>
+            <span>Writer confidence BEFORE <strong>*</strong></span>
             <select name="beforeConfidence" required>
               <option value="" selected disabled>Choose</option>
               <option>Unsure</option>
@@ -122,7 +65,7 @@
           </label>
 
           <label class="field">
-            <span>Writer confidence AFTER</span>
+            <span>Writer confidence AFTER <strong>*</strong></span>
             <select name="afterConfidence" required>
               <option value="" selected disabled>Choose</option>
               <option>Unsure</option>
@@ -133,13 +76,21 @@
           </label>
         </div>
 
+        <div class="field">
+          <span>Consultation Duration <strong>*</strong></span>
+          <div class="radio-row">
+            <label><input type="radio" name="duration" value="30" required /> 30 min</label>
+            <label><input type="radio" name="duration" value="60" required /> 60 min</label>
+          </div>
+        </div>
+
         <label class="field">
-          <span>What aspects of writing did you work on today?</span>
+          <span>What aspects of writing did you work on today? <strong>*</strong></span>
           <textarea name="workedOn" rows="4" required></textarea>
         </label>
 
         <label class="field">
-          <span>Next steps for the writer</span>
+          <span>Next steps for the writer <strong>*</strong></span>
           <textarea name="nextSteps" rows="4" required></textarea>
         </label>
 
@@ -151,6 +102,8 @@
             Reset
           </button>
         </div>
+
+        <div class="message" id="consultant-message"></div>
 
       </form>
     </section>
@@ -166,7 +119,8 @@
       <a href="mailto:mdcho@henrico.k12.va.us">mdcho@henrico.k12.va.us</a>
     </p>
   </footer>
+
   <script src="theme-toggle.js"></script>
-</body>
+  <script src="script.js"></script></body>
 
 </html>
