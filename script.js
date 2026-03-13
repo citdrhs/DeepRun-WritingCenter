@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycby5s1lUpuESxP81rBx-ACe-mxDYMlL03qvyOKPyoGeGG4VEAwMjGiVq0fiAFGqfxAw7PQ/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbxH5Uhio6sHengbT4tc0uUk97xkZyusquJPRT9i3gsjrOEB60rB4qf3E4XdWwrwsapdxA/exec";
 
 function showMessage(id, message, isError) {
   const el = document.getElementById(id);
@@ -15,7 +15,8 @@ async function apiGet(action, params) {
     if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
   });
   const res = await fetch(url.toString(), {
-    method: "GET"
+    method: "GET",
+    headers: { Accept: "application/json" }
   });
   if (!res.ok) throw new Error("Request failed: " + res.status);
   return res.json();
@@ -78,18 +79,21 @@ function bindSignupForm() {
     showMessage("signup-message", "Submitting...", false);
 
     const fd = new FormData(form);
-    const firstName = fd.get("firstName") || "";
-    const lastName = fd.get("lastName") || "";
+    const firstName = (fd.get("firstName") || "").trim();
+    const lastName  = (fd.get("lastName")  || "").trim();
     const studentName = (firstName + " " + lastName).trim();
 
     try {
       const res = await apiPost("submitSignup", {
-        student_name: studentName,
-        student_email: fd.get("studentEmail"),
-        student_grade: fd.get("studentGrade"),
+        student_name:     studentName,
+        student_email:    fd.get("studentEmail"),
+        student_grade:    fd.get("studentGrade"),
         appointment_date: fd.get("appointmentDateTime"),
-        teacher_email: fd.get("teacherEmail"),
-        dual_enroll: fd.get("dualEnroll") === "true"
+        teacher_email:    fd.get("teacherEmail"),
+        course:           fd.get("courseInfo"),
+        assignment_type:  fd.get("assignmentType"),
+        google_doc_link:  fd.get("googleDocLink") || "",
+        dual_enroll:      fd.get("dualEnroll") === "true"
       });
 
       if (res.ok) {
@@ -129,13 +133,16 @@ async function loadSignupOptions() {
       select.appendChild(option);
     });
   } catch (err) {
-    select.innerHTML = "";
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "Could not load sign-ups";
-    opt.disabled = true;
-    opt.selected = true;
-    select.appendChild(opt);
+    const sel = document.getElementById("consult-id-select");
+    if (sel) {
+      sel.innerHTML = "";
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "Could not load sign-ups";
+      opt.disabled = true;
+      opt.selected = true;
+      sel.appendChild(opt);
+    }
   }
 }
 
@@ -150,14 +157,14 @@ function bindConsultationForm() {
     const fd = new FormData(form);
     try {
       const res = await apiPost("submitConsultation", {
-        consult_id: fd.get("consultId"),
-        consultant: fd.get("consultantName"),
+        consult_id:  fd.get("consultId"),
+        consultant:  fd.get("consultantName"),
         before_conf: fd.get("beforeConfidence"),
-        after_conf: fd.get("afterConfidence"),
-        duration: Number(fd.get("duration")),
-        due_date: fd.get("dueDate"),
-        notes: fd.get("workedOn"),
-        next_steps: fd.get("nextSteps")
+        after_conf:  fd.get("afterConfidence"),
+        duration:    Number(fd.get("duration")),
+        due_date:    fd.get("dueDate"),
+        notes:       fd.get("workedOn"),
+        next_steps:  fd.get("nextSteps")
       });
 
       if (res.ok) {
@@ -176,13 +183,11 @@ function bindConsultationForm() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async function () {
-  // Signup page
   if (document.getElementById("signup-form")) {
     bindSignupForm();
     await loadTeachers();
   }
 
-  // Consultant form page
   if (document.getElementById("consultant-form")) {
     bindConsultationForm();
     await loadSignupOptions();
