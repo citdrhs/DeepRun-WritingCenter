@@ -1,4 +1,4 @@
-const API_URL = "https://script.google.com/macros/s/AKfycbxH5Uhio6sHengbT4tc0uUk97xkZyusquJPRT9i3gsjrOEB60rB4qf3E4XdWwrwsapdxA/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbz6eduq4w8NGB4ccOuqvq9FMqXbcMrW2jbDxap3cnAFvjj0CjzD2df2zw5OOIyzMGgznw/exec";
 
 function showMessage(id, message, isError) {
   const el = document.getElementById(id);
@@ -164,7 +164,8 @@ function bindConsultationForm() {
         duration:    Number(fd.get("duration")),
         due_date:    fd.get("dueDate"),
         notes:       fd.get("workedOn"),
-        next_steps:  fd.get("nextSteps")
+        next_steps:  fd.get("nextSteps"),
+        password:    fd.get("password")
       });
 
       if (res.ok) {
