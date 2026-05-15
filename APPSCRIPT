@@ -1,0 +1,1016 @@
+/*
+ * Deep Run Writing Center — Apps Script backend
+ *
+ * Sheets (source of truth):
+ *   Teachers          user_id, name, email, department, active
+ *   Consultants       consultant_id, name, username, password, active   (login lives here now)
+ *   Consultations     consult_id, student_name, student_email, student_grade,
+ *                     appointment_date, teacher_email, course, assignment_type,
+ *                     google_doc_link, dual_enroll, consultant, before_conf,
+ *                     after_conf, duration, due_date, notes, next_steps,
+ *                     teacher_department, status, no_show, created_at, completed_at
+ *   ConsultantStats   consultant, total_consults, total_minutes, total_hours
+ *   HoursLog          log_id, consultant, date, hours, description, submitted_at
+ *   StudentVisits     submitted_at, student_name, student_email, student_grade,
+ *                     appointment, no_show
+ *   TeacherView       teacher_email, teacher_department, student_name, consult_date,
+ *                     dual_enroll, total_visits
+ *   Appointments      appointment_id, description, max_signups
+ *   Forward           label, email   (CC list for outgoing feedback emails)
+ *
+ * If a sheet's structure ever changes, bump SCHEMA_VERSION and hit ?action=init once
+ * to force ensureSheet() to run.
+ */
+
+const SPREADSHEET_ID = '1TWAs1WUiA_NkMznxqdyNb2R8eXkOQb2eWoLtH9WlYz8';
+const SCHEMA_VERSION = '2026-05-15-v2';
+
+const SHEETS = {
+    TEACHERS: 'Teachers',
+    CONSULTATIONS: 'Consultations',
+    CONSULTANT_STATS: 'ConsultantStats',
+    STUDENT_VISITS: 'StudentVisits',
+    TEACHER_VIEW: 'TeacherView',
+    FORWARD: 'Forward',
+    APPOINTMENTS: 'Appointments',
+    CONSULTANTS: 'Consultants',
+    HOURS_LOG: 'HoursLog'
+};
+
+const STATUS = {
+    SCHEDULED: 'scheduled',
+    COMPLETED: 'completed'
+};
+const NO_SHOW_YES = 'yes';
+const ALLOWED_TEACHER_DOMAINS = ['henrico.k12.va.us', 'henricostudents.org'];
+
+const CONFIDENCE_SCORES = {
+    Unsure: 1,
+    'Somewhat Confident': 2,
+    Confident: 3,
+    'Very Confident': 4
+};
+
+// ── Routing ───────────────────────────────────────────────────────────────────
+
+function doGet(e) {
+    const action = (e.parameter.action || '').trim();
+    try {
+        if (action === 'init') {
+            setupSchema();
+            rebuildTeacherViewFromScratch();
+            PropertiesService.getScriptProperties().setProperty('SCHEMA_VERSION', SCHEMA_VERSION);
+            return json({ ok: true, schema: listSheets() });
+        }
+        ensureSchemaOnce();
+        switch (action) {
+            case 'health': return json({ ok: true, timestamp: new Date().toISOString() });
+            case 'teachers': return json({ teachers: getTeachers() });
+            case 'signupOptions': return json({ options: getSignupOptions() });
+            case 'getAppointments': return json({ appointments: getAvailableAppointments() });
+            case 'getConsultants': return json({ consultants: getConsultantNames() });
+            case 'getConsultantStats': return json(getConsultantStats(e.parameter.consultant_id, e.parameter.name));
+            case 'getConsultantHistory': return json({ rows: getConsultantHistory(e.parameter.consultant_id, e.parameter.name) });
+            case 'getHoursLog': return json({ rows: getHoursLog(e.parameter.consultant_id, e.parameter.name) });
+            case 'noShowOptions': return json({ options: getNoShowOptions() });
+            case 'dashboardData': return json(getDashboardData(e.parameter.consultant_id, e.parameter.name));
+            case 'checkPassword': return json(checkConsultantLogin(e.parameter.username, e.parameter.password));
+            default: return json({ error: 'Unknown action.' }, 400);
+        }
+    } catch (err) {
+        return json({ error: String(err.message || err) }, 500);
+    }
+}
+
+function doPost(e) {
+    try {
+        ensureSchemaOnce();
+        const body = JSON.parse(e.postData.contents || '{}');
+        const action = (body.action || '').trim();
+        const payload = body.payload || {};
+
+        switch (action) {
+            case 'submitSignup': return json(submitSignup(payload));
+            case 'submitConsultation': return json(submitConsultation(payload));
+            case 'submitHoursLog': return json(submitHoursLog(payload));
+            case 'markNoShow': return json(markNoShow(payload));
+            case 'revertNoShow': return json(revertNoShow(payload));
+            default: return json({ error: 'Unknown action.' }, 400);
+        }
+    } catch (err) {
+        return json({ error: String(err.message || err) }, 500);
+    }
+}
+
+// ── Schema setup (runs once per deploy, not every request) ────────────────────
+
+let _schemaReady = false;
+
+function ensureSchemaOnce() {
+    if (_schemaReady) return;
+    const props = PropertiesService.getScriptProperties();
+    if (props.getProperty('SCHEMA_VERSION') === SCHEMA_VERSION) {
+        _schemaReady = true;
+        return;
+    }
+    setupSchema();
+    props.setProperty('SCHEMA_VERSION', SCHEMA_VERSION);
+    _schemaReady = true;
+}
+
+function setupSchema() {
+    const ss = getSpreadsheet();
+
+    ensureSheet(ss, SHEETS.TEACHERS, [
+        'user_id', 'name', 'email', 'department', 'active'
+    ]);
+
+    ensureSheet(ss, SHEETS.CONSULTATIONS, [
+        'consult_id',
+        'student_name',
+        'student_email',
+        'student_grade',
+        'appointment_date',
+        'teacher_email',
+        'course',
+        'assignment_type',
+        'google_doc_link',
+        'dual_enroll',
+        'consultant',
+        'before_conf',
+        'after_conf',
+        'duration',
+        'due_date',
+        'notes',
+        'next_steps',
+        'teacher_department',
+        'status',
+        'no_show',
+        'created_at',
+        'completed_at'
+    ]);
+
+    ensureSheet(ss, SHEETS.CONSULTANT_STATS, [
+        'consultant', 'total_consults', 'total_minutes', 'total_hours'
+    ]);
+
+    ensureSheet(ss, SHEETS.STUDENT_VISITS, [
+        'submitted_at', 'student_name', 'student_email', 'student_grade', 'appointment', 'no_show'
+    ]);
+
+    ensureSheet(ss, SHEETS.TEACHER_VIEW, [
+        'teacher_email', 'teacher_department', 'student_name', 'consult_date', 'dual_enroll', 'total_visits'
+    ]);
+
+    ensureSheet(ss, SHEETS.APPOINTMENTS, [
+        'appointment_id', 'description', 'max_signups'
+    ]);
+
+    ensureSheet(ss, SHEETS.CONSULTANTS, [
+        'consultant_id', 'name', 'username', 'password', 'active'
+    ]);
+
+    ensureSheet(ss, SHEETS.HOURS_LOG, [
+        'log_id', 'consultant', 'date', 'hours', 'description', 'submitted_at'
+    ]);
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+function checkConsultantLogin(username, password) {
+    const u = String(username || '').trim().toLowerCase();
+    const p = String(password || '').trim();
+    if (!u || !p) return { ok: false };
+
+    const sheet = getSheet(SHEETS.CONSULTANTS);
+    const rows = sheet.getDataRange().getValues();
+    if (rows.length <= 1) return { ok: false };
+    const idx = headerIndexMap(rows[0]);
+
+    for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        const storedUser = String(row[idx['username'] - 1] || '').trim().toLowerCase();
+        const storedPass = String(row[idx['password'] - 1] || '').trim();
+        const active = String(row[idx['active'] - 1]).toLowerCase();
+        if (active === 'false') continue;
+        if (u === storedUser && p === storedPass) {
+            return {
+                ok: true,
+                name: String(row[idx['name'] - 1] || '').trim(),
+                consultant_id: String(row[idx['consultant_id'] - 1] || '').trim()
+            };
+        }
+    }
+    return { ok: false };
+}
+
+// ── Forward (CC list) ─────────────────────────────────────────────────────────
+
+function getCcEmails() {
+    const sheet = getSpreadsheet().getSheetByName(SHEETS.FORWARD);
+    if (!sheet) return '';
+    const rows = sheet.getDataRange().getValues();
+    if (rows.length <= 1) return '';
+    const idx = headerIndexMap(rows[0]);
+    const emailCol = idx['email'] ? idx['email'] - 1 : 1; // fall back to col 2 if unlabeled
+    return rows.slice(1)
+        .map(function (row) { return String(row[emailCol] || '').trim(); })
+        .filter(function (email) { return email !== ''; })
+        .join(',');
+}
+
+// ── Signup form submission ────────────────────────────────────────────────────
+
+function submitSignup(payload) {
+    requireFields(payload, [
+        'student_name', 'student_email', 'student_grade',
+        'appointment_date', 'teacher_email',
+        'course', 'assignment_type'
+    ]);
+
+    const consultId = generateId('CO');
+    const now = new Date();
+
+    appendRow(SHEETS.CONSULTATIONS, [
+        consultId,
+        payload.student_name,
+        String(payload.student_email).toLowerCase(),
+        String(payload.student_grade),
+        payload.appointment_date,
+        String(payload.teacher_email).toLowerCase(),
+        payload.course,
+        payload.assignment_type,
+        payload.google_doc_link || '',
+        '',                                              // dual_enroll
+        '',                                              // consultant
+        '',                                              // before_conf
+        '',                                              // after_conf
+        '',                                              // duration
+        '',                                              // due_date
+        '',                                              // notes
+        '',                                              // next_steps
+        getTeacherDepartment(payload.teacher_email),     // teacher_department
+        STATUS.SCHEDULED,
+        '',                                              // no_show
+        now.toISOString(),
+        ''                                               // completed_at
+    ]);
+
+    // Confirmation email to student — no failure handling, if it fails it fails
+    MailApp.sendEmail({
+        to: payload.student_email,
+        subject: 'Writing Center Appointment Received',
+        htmlBody: [
+            '<p>Your Writing Center sign-up has been received.</p>',
+            '<p><b>Student:</b> ' + payload.student_name + '</p>',
+            '<p><b>Appointment:</b> ' + payload.appointment_date + '</p>',
+            '<p><b>Course:</b> ' + payload.course + '</p>',
+            '<p>Please arrive on time. Room 212.</p>'
+        ].join('')
+    });
+
+    appendRow(SHEETS.STUDENT_VISITS, [
+        new Date().toISOString(),
+        payload.student_name,
+        String(payload.student_email).toLowerCase(),
+        String(payload.student_grade),
+        payload.appointment_date,
+        ''                                               // no_show
+    ]);
+
+    return { ok: true, consult_id: consultId };
+}
+
+// ── Consultant form submission ────────────────────────────────────────────────
+
+function submitConsultation(payload) {
+    requireFields(payload, [
+        'consult_id',
+        'before_conf', 'after_conf', 'duration',
+        'due_date', 'notes', 'next_steps'
+    ]);
+
+    // Accept either consultant_id (preferred) or consultant (name) for back-compat.
+    const consultantName = resolveConsultantName(payload.consultant_id, payload.consultant);
+    if (!consultantName) throw new Error('Missing consultant');
+
+    const consultSheet = getSheet(SHEETS.CONSULTATIONS);
+    const table = consultSheet.getDataRange().getValues();
+    const headers = table[0];
+    const idx = headerIndexMap(headers);
+
+    const rowNumber = findRowById(table, idx, 'consult_id', payload.consult_id);
+    if (!rowNumber) throw new Error('Sign-up record not found: ' + payload.consult_id);
+
+    const teacherEmail = String(consultSheet.getRange(rowNumber, idx['teacher_email']).getValue() || '').toLowerCase();
+    const studentName = String(consultSheet.getRange(rowNumber, idx['student_name']).getValue() || '');
+    const appointmentDate = String(consultSheet.getRange(rowNumber, idx['appointment_date']).getValue() || '');
+    const course = String(consultSheet.getRange(rowNumber, idx['course']).getValue() || '');
+    const assignmentType = String(consultSheet.getRange(rowNumber, idx['assignment_type']).getValue() || '');
+
+    // ── Batched writes (replaces 9 individual setValue calls) ────────────────
+    // Block 1: contiguous columns from `consultant` through `next_steps`.
+    const block1Start = idx['consultant'];
+    const block1End = idx['next_steps'];
+    const block1Width = block1End - block1Start + 1;
+    const block1Values = new Array(block1Width).fill('');
+    block1Values[idx['consultant'] - block1Start] = consultantName;
+    block1Values[idx['before_conf'] - block1Start] = payload.before_conf;
+    block1Values[idx['after_conf'] - block1Start] = payload.after_conf;
+    block1Values[idx['dual_enroll'] - block1Start] = payload.dual_enroll === true;
+    block1Values[idx['duration'] - block1Start] = Number(payload.duration);
+    block1Values[idx['due_date'] - block1Start] = String(payload.due_date);
+    block1Values[idx['notes'] - block1Start] = payload.notes;
+    block1Values[idx['next_steps'] - block1Start] = payload.next_steps;
+    consultSheet.getRange(rowNumber, block1Start, 1, block1Width).setValues([block1Values]);
+
+    // Format due_date column as plain text (preserves "M/D/YYYY" without auto-date parsing)
+    consultSheet.getRange(rowNumber, idx['due_date']).setNumberFormat('@');
+
+    // Block 2: status + completed_at (status is contiguous with no_show + created_at + completed_at,
+    // but we only need to set status and completed_at, not the others).
+    consultSheet.getRange(rowNumber, idx['status']).setValue(STATUS.COMPLETED);
+    consultSheet.getRange(rowNumber, idx['completed_at']).setValue(new Date().toISOString());
+
+    // ── Incremental updates (no full sheet rebuilds) ─────────────────────────
+    recalcConsultantStatsFor(consultantName);
+    appendTeacherViewRow({
+        teacher_email: teacherEmail,
+        student_name: studentName,
+        appointment_date: appointmentDate,
+        dual_enroll: payload.dual_enroll === true
+    });
+    colorOneConsultationRow(rowNumber, STATUS.COMPLETED, '');
+
+    const feedbackHtml = buildTeacherFeedbackEmail({
+        student_name: studentName,
+        consultant: consultantName,
+        date: appointmentDate,
+        course: course,
+        assignment_type: assignmentType,
+        before_conf: payload.before_conf,
+        after_conf: payload.after_conf,
+        duration: payload.duration,
+        notes: payload.notes,
+        next_steps: payload.next_steps
+    });
+
+    const ccEmails = getCcEmails();
+    const teacherDomain = teacherEmail.split('@')[1] || '';
+    const validDomain = ALLOWED_TEACHER_DOMAINS.indexOf(teacherDomain) >= 0;
+
+    if (!validDomain) {
+        // Bad domain — alert directors immediately, don't attempt send
+        MailApp.sendEmail({
+            to: ccEmails,
+            subject: '⚠️ ACTION REQUIRED - Invalid Teacher Email for ' + studentName,
+            htmlBody: [
+                '<p style="color:red;"><strong>⚠️ Warning:</strong> The teacher email <b>',
+                teacherEmail,
+                '</b> is not a recognized school email address. It was not sent.</p>',
+                '<p><b>Student:</b> ' + studentName + '</p>',
+                '<p><b>Appointment:</b> ' + appointmentDate + '</p>',
+                '<p><b>Course:</b> ' + course + '</p>',
+                '<p><b>Confirmation ID:</b> ' + payload.consult_id + '</p>'
+            ].join('')
+        });
+    } else {
+        try {
+            MailApp.sendEmail({
+                to: teacherEmail,
+                cc: ccEmails,
+                subject: 'Writing Center Feedback for ' + studentName,
+                htmlBody: feedbackHtml
+            });
+        } catch (err) {
+            MailApp.sendEmail({
+                to: ccEmails,
+                subject: '⚠️ ACTION REQUIRED - Teacher Email Failed for ' + studentName,
+                htmlBody: [
+                    '<p style="color:red;"><strong>⚠️ Warning:</strong> The feedback email could not be delivered to <b>',
+                    teacherEmail,
+                    '</b>.</p>',
+                    '<p><b>Student:</b> ' + studentName + '</p>',
+                    '<p><b>Appointment:</b> ' + appointmentDate + '</p>',
+                    '<p><b>Course:</b> ' + course + '</p>',
+                    '<p><b>Confirmation ID:</b> ' + payload.consult_id + '</p>'
+                ].join('')
+            });
+        }
+    }
+
+    // Send to student — if it fails, alert directors
+    const studentEmail = String(consultSheet.getRange(rowNumber, idx['student_email']).getValue() || '').toLowerCase();
+    if (studentEmail) {
+        try {
+            MailApp.sendEmail({
+                to: studentEmail,
+                subject: 'Writing Center Session Summary',
+                htmlBody: feedbackHtml
+            });
+        } catch (err) {
+            MailApp.sendEmail({
+                to: ccEmails,
+                subject: '⚠️ ACTION REQUIRED - Student Email Failed for ' + studentName,
+                htmlBody: [
+                    '<p style="color:red;"><strong>⚠️ Warning:</strong> The session summary could not be delivered to student <b>',
+                    studentEmail,
+                    '</b>.</p>',
+                    '<p><b>Student:</b> ' + studentName + '</p>',
+                    '<p><b>Appointment:</b> ' + appointmentDate + '</p>',
+                    '<p><b>Confirmation ID:</b> ' + payload.consult_id + '</p>'
+                ].join('')
+            });
+        }
+    }
+
+    return { ok: true, consult_id: payload.consult_id };
+}
+
+// Look up consultant display name from Consultants sheet by id (preferred) or
+// fall back to a literal name string. Returns the resolved name or '' if missing.
+function resolveConsultantName(consultantId, fallbackName) {
+    const sheet = getSheet(SHEETS.CONSULTANTS);
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return String(fallbackName || '').trim();
+    const idx = headerIndexMap(data[0]);
+    if (consultantId) {
+        const targetId = String(consultantId).trim();
+        for (let r = 1; r < data.length; r++) {
+            if (String(data[r][idx['consultant_id'] - 1]).trim() === targetId) {
+                return String(data[r][idx['name'] - 1] || '').trim();
+            }
+        }
+    }
+    return String(fallbackName || '').trim();
+}
+
+// ── Data queries ──────────────────────────────────────────────────────────────
+
+function getTeachers() {
+    return getRows(SHEETS.TEACHERS)
+        .filter(function (row) {
+            return String(row.active).toLowerCase() !== 'false' && row.email;
+        })
+        .map(function (row) {
+            return { email: row.email, name: row.name || row.email, department: row.department || '' };
+        })
+        .sort(function (a, b) { return a.name.localeCompare(b.name); });
+}
+
+function getTeacherDepartment(teacherEmail) {
+    const email = String(teacherEmail || '').toLowerCase();
+    if (!email) return '';
+    const teacher = getRows(SHEETS.TEACHERS).find(function (row) {
+        return String(row.email).toLowerCase() === email;
+    });
+    return teacher ? (teacher.department || '') : '';
+}
+
+function getSignupOptions() {
+    return getRows(SHEETS.CONSULTATIONS)
+        .filter(function (row) { return isScheduledRow(row); })
+        .map(function (row) {
+            return {
+                consult_id: row.consult_id,
+                student_name: row.student_name,
+                student_email: row.student_email,
+                student_grade: String(row.student_grade || ''),
+                date: row.appointment_date,
+                teacher_email: row.teacher_email,
+                course: row.course || '',
+                label: row.appointment_date + ' — ' + row.student_name
+            };
+        })
+        .sort(function (a, b) { return a.label.localeCompare(b.label); });
+}
+
+function getConsultantNames() {
+    const sheet = getSpreadsheet().getSheetByName(SHEETS.CONSULTANTS);
+    if (!sheet) return [];
+    const rows = sheet.getDataRange().getValues();
+    if (rows.length <= 1) return [];
+    const idx = headerIndexMap(rows[0]);
+    return rows.slice(1)
+        .filter(function (row) {
+            return String(row[idx['active'] - 1]).toLowerCase() !== 'false'
+                && String(row[idx['name'] - 1] || '').trim() !== '';
+        })
+        .map(function (row) {
+            return {
+                id: String(row[idx['consultant_id'] - 1] || '').trim(),
+                name: String(row[idx['name'] - 1] || '').trim()
+            };
+        })
+        .sort(function (a, b) { return a.name.localeCompare(b.name); });
+}
+
+function getAvailableAppointments() {
+    const apptSheet = getSheet(SHEETS.APPOINTMENTS);
+    const apptRows = apptSheet.getDataRange().getValues();
+    if (apptRows.length <= 1) return [];
+
+    const aIdx = headerIndexMap(apptRows[0]);
+    const idCol = aIdx['appointment_id'] - 1;
+    const descCol = aIdx['description'] - 1;
+    const maxCol = aIdx['max_signups'] - 1;
+
+    // Count how many signups exist per appointment description
+    const consultRows = getRows(SHEETS.CONSULTATIONS);
+    const countMap = {};
+    consultRows.forEach(function (row) {
+        const desc = String(row.appointment_date || '').trim();
+        if (desc) countMap[desc] = (countMap[desc] || 0) + 1;
+    });
+
+    const available = [];
+    apptRows.slice(1).forEach(function (row) {
+        const id = String(row[idCol] || '').trim();
+        const desc = String(row[descCol] || '').trim();
+        const max = Number(row[maxCol] || 0);
+        if (!desc || !max) return;
+        const taken = countMap[desc] || 0;
+        if (taken < max) {
+            available.push({ id: id, description: desc, spots_left: max - taken });
+        }
+    });
+    return available;
+}
+
+// Resolve a consultant identity for downstream queries. Accepts consultant_id
+// (preferred) or name; returns the canonical name to filter rows by.
+function resolveConsultantQueryName(consultantId, name) {
+    if (consultantId) {
+        const resolved = resolveConsultantName(consultantId, '');
+        if (resolved) return resolved;
+    }
+    return String(name || '').trim();
+}
+
+function getConsultantStats(consultantId, name) {
+    const target = resolveConsultantQueryName(consultantId, name);
+    if (!target) return { total_consults: 0, total_minutes: 0, total_hours: 0 };
+    const row = getRows(SHEETS.CONSULTANT_STATS).find(function (r) {
+        return String(r.consultant || '').trim().toLowerCase() === target.toLowerCase();
+    });
+    if (!row) return { total_consults: 0, total_minutes: 0, total_hours: 0 };
+    return {
+        total_consults: row.total_consults || 0,
+        total_minutes: row.total_minutes || 0,
+        total_hours: row.total_hours || 0
+    };
+}
+
+function getConsultantHistory(consultantId, name) {
+    const target = resolveConsultantQueryName(consultantId, name);
+    if (!target) return [];
+    return getRows(SHEETS.CONSULTATIONS)
+        .filter(function (row) {
+            return String(row.consultant || '').trim().toLowerCase() === target.toLowerCase()
+                && isCompletedRow(row);
+        })
+        .map(function (row) {
+            return {
+                consult_id: row.consult_id,
+                student_name: row.student_name,
+                student_email: row.student_email,
+                student_grade: row.student_grade,
+                appointment: row.appointment_date,
+                teacher_email: row.teacher_email,
+                course: row.course,
+                assignment_type: row.assignment_type,
+                before_conf: row.before_conf,
+                after_conf: row.after_conf,
+                duration: row.duration,
+                due_date: row.due_date,
+                dual_enroll: row.dual_enroll,
+                notes: row.notes,
+                next_steps: row.next_steps,
+                completed_at: row.completed_at
+            };
+        })
+        .sort(function (a, b) {
+            return String(b.completed_at || '').localeCompare(String(a.completed_at || ''));
+        });
+}
+
+function getHoursLog(consultantId, name) {
+    const target = resolveConsultantQueryName(consultantId, name);
+    if (!target) return [];
+    return getRows(SHEETS.HOURS_LOG)
+        .filter(function (row) {
+            return String(row.consultant || '').trim().toLowerCase() === target.toLowerCase();
+        })
+        .map(function (row) {
+            return {
+                log_id: row.log_id,
+                date: row.date ? String(row.date).slice(0, 10) : '',
+                hours: row.hours,
+                description: row.description,
+                submitted_at: row.submitted_at
+            };
+        })
+        .sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
+}
+
+// Bundled dashboard endpoint — returns everything the consultant dashboard
+// needs in ONE Apps Script invocation instead of 6–7 round-trips.
+function getDashboardData(consultantId, name) {
+    return {
+        stats: getConsultantStats(consultantId, name),
+        history: getConsultantHistory(consultantId, name),
+        signupOptions: getSignupOptions(),
+        consultants: getConsultantNames(),
+        noShowOptions: getNoShowOptions(),
+        hoursLog: getHoursLog(consultantId, name)
+    };
+}
+
+// ── Incremental stats recalc (replaces full rebuild on every submission) ─────
+
+function recalcConsultantStatsFor(consultantName) {
+    const target = String(consultantName || '').trim();
+    if (!target) return;
+    const targetKey = target.toLowerCase();
+
+    // Read consultations + hoursLog once each — same cost as before, but we
+    // only WRITE one row instead of clearing + appending N rows.
+    let totalConsults = 0;
+    let totalMinutes = 0;
+    let loggedHours = 0;
+
+    getRows(SHEETS.CONSULTATIONS).forEach(function (row) {
+        if (!isCompletedRow(row)) return;
+        if (String(row.consultant || '').trim().toLowerCase() !== targetKey) return;
+        totalConsults += 1;
+        const dur = Number(row.duration) || 0;
+        if (dur > 0 && dur <= 480) totalMinutes += dur;
+    });
+
+    getRows(SHEETS.HOURS_LOG).forEach(function (row) {
+        if (String(row.consultant || '').trim().toLowerCase() !== targetKey) return;
+        loggedHours += Number(row.hours) || 0;
+    });
+
+    const totalsRow = [
+        target,
+        totalConsults,
+        totalMinutes + Math.round(loggedHours * 60),
+        round2((totalMinutes / 60) + loggedHours)
+    ];
+
+    // Find existing row for this consultant in ConsultantStats, or append.
+    const sheet = getSheet(SHEETS.CONSULTANT_STATS);
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) {
+        sheet.appendRow(totalsRow);
+        return;
+    }
+    const idx = headerIndexMap(data[0]);
+    const nameCol = idx['consultant'] - 1;
+    for (let r = 1; r < data.length; r++) {
+        if (String(data[r][nameCol] || '').trim().toLowerCase() === targetKey) {
+            sheet.getRange(r + 1, 1, 1, totalsRow.length).setValues([totalsRow]);
+            return;
+        }
+    }
+    sheet.appendRow(totalsRow);
+}
+
+// ── Incremental TeacherView append ───────────────────────────────────────────
+
+// Append one row when a consultation completes. Computes total_visits by
+// counting existing TeacherView rows for this student (+1).
+function appendTeacherViewRow(consultRow) {
+    const sheet = getSheet(SHEETS.TEACHER_VIEW);
+    const data = sheet.getDataRange().getValues();
+    let visits = 1;
+    if (data.length > 1) {
+        const idx = headerIndexMap(data[0]);
+        const nameCol = idx['student_name'] - 1;
+        const targetName = String(consultRow.student_name).toLowerCase();
+        for (let r = 1; r < data.length; r++) {
+            if (String(data[r][nameCol] || '').toLowerCase() === targetName) visits += 1;
+        }
+    }
+    sheet.appendRow([
+        consultRow.teacher_email,
+        getTeacherDepartment(consultRow.teacher_email),
+        consultRow.student_name,
+        consultRow.appointment_date,
+        consultRow.dual_enroll,
+        visits
+    ]);
+}
+
+// Full rebuild — only invoked by ?action=init. Keeps a way to recover if
+// TeacherView ever drifts from Consultations.
+function rebuildTeacherViewFromScratch() {
+    const consultations = getRows(SHEETS.CONSULTATIONS).filter(isCompletedRow);
+    const visitMap = {};
+    consultations.forEach(function (row) {
+        const key = String(row.student_name).toLowerCase();
+        visitMap[key] = (visitMap[key] || 0) + 1;
+    });
+
+    clearDataRows(SHEETS.TEACHER_VIEW);
+    const sheet = getSheet(SHEETS.TEACHER_VIEW);
+    if (!consultations.length) return;
+
+    // Build a single 2D array, write in one setValues call.
+    const out = consultations.map(function (row) {
+        return [
+            row.teacher_email,
+            getTeacherDepartment(row.teacher_email),
+            row.student_name,
+            row.appointment_date,
+            row.dual_enroll,
+            visitMap[String(row.student_name).toLowerCase()] || 0
+        ];
+    });
+    sheet.getRange(2, 1, out.length, out[0].length).setValues(out);
+}
+
+// ── Scheduled trigger ─────────────────────────────────────────────────────────
+
+function sendUpcomingReminders() {
+    ensureSchemaOnce();
+    const rows = getRows(SHEETS.CONSULTATIONS);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const target = Utilities.formatDate(tomorrow, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+    rows.forEach(function (row) {
+        if (!isScheduledRow(row)) return;
+        if (!String(row.appointment_date).startsWith(target)) return;
+        if (!row.student_email) return;
+        MailApp.sendEmail({
+            to: row.student_email,
+            subject: 'Reminder: Writing Center Appointment Tomorrow',
+            htmlBody: '<p>This is a reminder that you have a Writing Center appointment on <b>' + target + '</b>. Room 212.</p>'
+        });
+    });
+}
+
+// ── Email builder ─────────────────────────────────────────────────────────────
+
+function buildTeacherFeedbackEmail(p) {
+    return [
+        '<h3>Writing Center Feedback</h3>',
+        '<p><b>Student:</b> ' + p.student_name + '</p>',
+        '<p><b>Consultant:</b> ' + p.consultant + '</p>',
+        '<p><b>Date:</b> ' + p.date + '</p>',
+        '<p><b>Course:</b> ' + p.course + '</p>',
+        '<p><b>Assignment Type:</b> ' + p.assignment_type + '</p>',
+        '<p><b>Duration:</b> ' + p.duration + ' min</p>',
+        '<p><b>Before Confidence:</b> ' + p.before_conf + '</p>',
+        '<p><b>After Confidence:</b> ' + p.after_conf + '</p>',
+        '<p><b>What We Worked On:</b><br>' + String(p.notes || '').replace(/\n/g, '<br>') + '</p>',
+        '<p><b>Next Steps:</b><br>' + String(p.next_steps || '').replace(/\n/g, '<br>') + '</p>'
+    ].join('');
+}
+
+// ── No-show ───────────────────────────────────────────────────────────────────
+
+function markNoShow(payload) {
+    requireFields(payload, ['consult_id']);
+
+    const sheet = getSheet(SHEETS.CONSULTATIONS);
+    const table = sheet.getDataRange().getValues();
+    const headers = table[0];
+    const idx = headerIndexMap(headers);
+
+    const rowNumber = findRowById(table, idx, 'consult_id', payload.consult_id);
+    if (!rowNumber) throw new Error('Sign-up record not found: ' + payload.consult_id);
+
+    sheet.getRange(rowNumber, idx['no_show']).setValue(NO_SHOW_YES);
+
+    // Mirror onto StudentVisits row (matched by student_email + appointment_date).
+    const studentEmail = String(table[rowNumber - 1][idx['student_email'] - 1] || '').toLowerCase();
+    const apptDate = String(table[rowNumber - 1][idx['appointment_date'] - 1] || '');
+    setStudentVisitNoShow(studentEmail, apptDate, NO_SHOW_YES);
+
+    const status = String(table[rowNumber - 1][idx['status'] - 1] || '');
+    colorOneConsultationRow(rowNumber, status, NO_SHOW_YES);
+
+    return { ok: true };
+}
+
+function revertNoShow(payload) {
+    requireFields(payload, ['consult_id']);
+
+    const sheet = getSheet(SHEETS.CONSULTATIONS);
+    const table = sheet.getDataRange().getValues();
+    const headers = table[0];
+    const idx = headerIndexMap(headers);
+
+    const rowNumber = findRowById(table, idx, 'consult_id', payload.consult_id);
+    if (!rowNumber) throw new Error('Sign-up record not found: ' + payload.consult_id);
+
+    sheet.getRange(rowNumber, idx['no_show']).setValue('');
+
+    const studentEmail = String(table[rowNumber - 1][idx['student_email'] - 1] || '').toLowerCase();
+    const apptDate = String(table[rowNumber - 1][idx['appointment_date'] - 1] || '');
+    setStudentVisitNoShow(studentEmail, apptDate, '');
+
+    const status = String(table[rowNumber - 1][idx['status'] - 1] || '');
+    colorOneConsultationRow(rowNumber, status, '');
+
+    return { ok: true };
+}
+
+function getNoShowOptions() {
+    return getRows(SHEETS.CONSULTATIONS)
+        .filter(function (row) {
+            return String(row.no_show || '').toLowerCase() === NO_SHOW_YES;
+        })
+        .map(function (row) {
+            return {
+                consult_id: row.consult_id,
+                label: row.appointment_date + ' — ' + row.student_name
+            };
+        })
+        .sort(function (a, b) { return a.label.localeCompare(b.label); });
+}
+
+// Find the StudentVisits row matching (email, appointment_date) and set its
+// no_show column. Silent no-op if not found (e.g. legacy rows that pre-date
+// the no_show column).
+function setStudentVisitNoShow(studentEmail, appointmentDate, value) {
+    if (!studentEmail || !appointmentDate) return;
+    const sheet = getSheet(SHEETS.STUDENT_VISITS);
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+    const idx = headerIndexMap(data[0]);
+    const emailCol = idx['student_email'] - 1;
+    const apptCol = idx['appointment'] - 1;
+    const nsCol = idx['no_show'];
+    if (!nsCol) return; // no_show column not yet added on this sheet
+    for (let r = 1; r < data.length; r++) {
+        if (String(data[r][emailCol] || '').toLowerCase() === studentEmail
+            && String(data[r][apptCol] || '') === appointmentDate) {
+            sheet.getRange(r + 1, nsCol).setValue(value);
+            return;
+        }
+    }
+}
+
+// ── Row coloring ──────────────────────────────────────────────────────────────
+
+// Color a SINGLE row in Consultations. Called from submitConsultation /
+// markNoShow / revertNoShow — replaces the old full-sheet scan + N writes.
+function colorOneConsultationRow(rowNumber, status, noShow) {
+    const sheet = getSheet(SHEETS.CONSULTATIONS);
+    const lastCol = sheet.getLastColumn();
+    const color = pickRowColor(status, noShow);
+    sheet.getRange(rowNumber, 1, 1, lastCol).setBackground(color);
+}
+
+function pickRowColor(status, noShow) {
+    if (String(noShow || '').toLowerCase() === NO_SHOW_YES) return '#f4c7c3';   // red — no-show
+    if (String(status || '').toLowerCase() === STATUS.COMPLETED) return '#b7e1cd'; // green — completed
+    return null;
+}
+
+// Full-table version: one batched setBackgrounds call (1 round-trip vs. N).
+// Reserved for ?action=init.
+function colorConsultationRows() {
+    const sheet = getSheet(SHEETS.CONSULTATIONS);
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return;
+    const idx = headerIndexMap(data[0]);
+    const statusCol = idx['status'] - 1;
+    const noShowCol = idx['no_show'] - 1;
+    const idCol = idx['consult_id'] - 1;
+    const lastCol = sheet.getLastColumn();
+
+    const matrix = [];
+    for (let r = 1; r < data.length; r++) {
+        const rowId = String(data[r][idCol] || '').trim();
+        if (!rowId) {
+            matrix.push(new Array(lastCol).fill(null));
+            continue;
+        }
+        const color = pickRowColor(data[r][statusCol], data[r][noShowCol]);
+        matrix.push(new Array(lastCol).fill(color));
+    }
+    sheet.getRange(2, 1, matrix.length, lastCol).setBackgrounds(matrix);
+}
+
+// ── Hours log ─────────────────────────────────────────────────────────────────
+
+function submitHoursLog(payload) {
+    requireFields(payload, ['consultant', 'date', 'hours', 'description']);
+
+    const hours = Number(payload.hours);
+    if (isNaN(hours) || hours <= 0) throw new Error('Hours must be a positive number.');
+
+    const logId = generateId('HL');
+    appendRow(SHEETS.HOURS_LOG, [
+        logId,
+        payload.consultant,
+        String(payload.date),
+        hours,
+        payload.description,
+        new Date().toISOString()
+    ]);
+    recalcConsultantStatsFor(payload.consultant);
+    return { ok: true, log_id: logId };
+}
+
+// ── Row classification helpers ────────────────────────────────────────────────
+
+function isCompletedRow(row) {
+    if (String(row.status || '').toLowerCase() === STATUS.COMPLETED) return true;
+    return !!row.consultant;
+}
+
+function isScheduledRow(row) {
+    if (String(row.status || '').toLowerCase() === STATUS.COMPLETED) return false;
+    if (String(row.no_show || '').toLowerCase() === NO_SHOW_YES) return false;
+    if (String(row.status || '').toLowerCase() === STATUS.SCHEDULED) return true;
+    return !row.consultant && !!row.appointment_date && !!row.student_name;
+}
+
+function findRowById(values, idx, column, id) {
+    const colIndex = idx[column] - 1;
+    for (let r = 2; r <= values.length; r++) {
+        if (String(values[r - 1][colIndex]) === String(id)) return r;
+    }
+    return null;
+}
+
+function headerIndexMap(headerRow) {
+    const map = {};
+    headerRow.forEach(function (name, i) { map[String(name).trim()] = i + 1; });
+    return map;
+}
+
+// ── Spreadsheet helpers ───────────────────────────────────────────────────────
+
+let _ss = null;
+function getSpreadsheet() {
+    if (!_ss) _ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    return _ss;
+}
+
+const _sheets = {};
+function getSheet(name) {
+    if (!_sheets[name]) {
+        const sheet = getSpreadsheet().getSheetByName(name);
+        if (!sheet) throw new Error('Missing sheet: ' + name);
+        _sheets[name] = sheet;
+    }
+    return _sheets[name];
+}
+
+function ensureSheet(ss, name, headers) {
+    let sheet = ss.getSheetByName(name);
+    if (!sheet) { sheet = ss.insertSheet(name); sheet.appendRow(headers); return; }
+    if (sheet.getLastRow() === 0) { sheet.appendRow(headers); return; }
+
+    const cur = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    if (cur.length < headers.length) sheet.insertColumnsAfter(cur.length, headers.length - cur.length);
+    for (let i = 0; i < headers.length; i++) {
+        if (String(cur[i] || '') !== String(headers[i])) sheet.getRange(1, i + 1).setValue(headers[i]);
+    }
+}
+
+function appendRow(sheetName, row) { getSheet(sheetName).appendRow(row); }
+
+function clearDataRows(sheetName) {
+    const sheet = getSheet(sheetName);
+    const last = sheet.getLastRow();
+    if (last > 1) sheet.getRange(2, 1, last - 1, sheet.getLastColumn()).clearContent();
+}
+
+function getRows(sheetName) {
+    const sheet = getSheet(sheetName);
+    const values = sheet.getDataRange().getValues();
+    if (values.length <= 1) return [];
+    const headers = values[0].map(function (h) { return String(h).trim(); });
+    return values.slice(1).map(function (row) {
+        const obj = {};
+        headers.forEach(function (h, i) { obj[h] = row[i]; });
+        return obj;
+    });
+}
+
+function listSheets() { return getSpreadsheet().getSheets().map(function (s) { return s.getName(); }); }
+
+function requireFields(payload, fields) {
+    fields.forEach(function (f) {
+        if (payload[f] === null || payload[f] === undefined || payload[f] === '') {
+            throw new Error('Missing required field: ' + f);
+        }
+    });
+}
+
+function generateId(prefix) { return prefix + '-' + Utilities.getUuid().slice(0, 8).toUpperCase(); }
+function round2(n) { return Math.round(Number(n) * 100) / 100; }
+
+function json(obj) {
+    const out = ContentService.createTextOutput(JSON.stringify(obj));
+    out.setMimeType(ContentService.MimeType.JSON);
+    return out;
+}
